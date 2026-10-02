@@ -1,6 +1,20 @@
 import type { ReactNode } from 'react';
-export type IconName = 'home' | 'check' | 'calendar' | 'clock' | 'report' | 'database' | 'plus' | 'play' | 'stop' | 'edit' | 'trash' | 'search' | 'left' | 'right' | 'download' | 'upload' | 'close';
+export type IconName = 'home' | 'check' | 'calendar' | 'clock' | 'report' | 'database' | 'plus' | 'play' | 'stop' | 'edit' | 'trash' | 'search' | 'left' | 'right' | 'download' | 'upload' | 'close' | 'focus' | 'agent' | 'user' | 'settings' | 'pause' | 'reset' | 'arrow' | 'leaf' | 'tag' | 'tree' | 'sun' | 'moon' | 'mail' | 'lock';
 const paths: Record<IconName, ReactNode> = {
+  focus: <><circle cx="12" cy="13" r="8"/><path d="M10 2h4m-2 0v3m6 2 2-2M12 9v4l2 2"/></>,
+  agent: <><rect x="4" y="7" width="16" height="13" rx="4"/><path d="M12 3v4M2 12v4m20-4v4M8 16h8"/><circle cx="8" cy="12" r=".7"/><circle cx="16" cy="12" r=".7"/></>,
+  user: <><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></>,
+  settings: <><path d="m9 3-1 3-3 1v3l-2 2 2 2v3l3 1 1 3h6l1-3 3-1v-3l2-2-2-2V7l-3-1-1-3z"/><circle cx="12" cy="12" r="3"/></>,
+  pause: <><path d="M8 5v14M16 5v14" strokeWidth="3"/></>,
+  reset: <><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></>,
+  arrow: <path d="M4 12h16m-6-6 6 6-6 6"/>,
+  leaf: <><path d="M20 3c-9-1-17 4-15 11 2 6 14 5 15-11ZM4 21l10-11"/></>,
+  tag: <><path d="m3 3 9 1 9 9-8 8-9-9z"/><circle cx="8" cy="8" r="1"/></>,
+  tree: <><path d="M4 5h16M4 12h10M4 19h13"/><circle cx="7" cy="5" r="2" fill="currentColor"/><circle cx="11" cy="12" r="2" fill="currentColor"/><circle cx="7" cy="19" r="2" fill="currentColor"/></>,
+  sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/></>,
+  moon: <path d="M21 13a9 9 0 0 1-10-10 9 9 0 1 0 10 10z"/>,
+  mail: <><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3 7 9 6 9-6"/></>,
+  lock: <><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></>,
   home: <><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M9 21v-7h6v7"/></>,
   check: <><rect x="3" y="3" width="18" height="18" rx="4"/><path d="m8 12 3 3 5-6"/></>,
   calendar: <><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18"/></>,
