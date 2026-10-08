@@ -1,6 +1,7 @@
 export type TaskCategory = 'inbox' | 'planned' | 'longterm';
 export type Priority = 'low' | 'normal' | 'high';
 export type Urgency = 'longterm' | 'shortterm' | 'urgent';
+export type TaskType = 'once' | 'daily';
 export type ActivityType = 'created' | 'started' | 'stopped' | 'completed' | 'reopened' | 'updated';
 
 export interface Task {
@@ -17,6 +18,8 @@ export interface Task {
   tags: string[];
   startAt: string | null;
   progress: number;
+  type: TaskType;
+  checkInDates: string[];
 }
 
 export interface ScheduleEvent {
@@ -44,6 +47,8 @@ export interface Activity {
   taskId: string;
   type: ActivityType;
   at: string;
+  description?: string;
+  revokedAt?: string | null;
 }
 
 export interface Settings {
@@ -135,8 +140,10 @@ export function validateData(value: unknown): WorkspaceData {
   const data = {
     ...value, schemaVersion: 2,
     tasks: value.tasks.map(task => {
-      if (!legacy || !isRecord(task)) return task;
-      return { ...task, urgency: task.priority === 'high' ? 'urgent' : task.category === 'longterm' ? 'longterm' : 'shortterm', tags: [task.category === 'longterm' ? '长期任务' : task.category === 'planned' ? '近期计划' : '收件箱'], startAt: validDate(task.dueAt) && validDate(task.createdAt) && Date.parse(task.dueAt) < Date.parse(task.createdAt) ? task.dueAt : task.createdAt, progress: task.completedAt ? 100 : 0 };
+      if (!isRecord(task)) return task;
+      const normalized = { ...task, type: task.type ?? 'once', checkInDates: task.checkInDates ?? [] };
+      if (!legacy) return normalized;
+      return { ...normalized, urgency: task.priority === 'high' ? 'urgent' : task.category === 'longterm' ? 'longterm' : 'shortterm', tags: [task.category === 'longterm' ? '长期任务' : task.category === 'planned' ? '近期计划' : '收件箱'], startAt: validDate(task.dueAt) && validDate(task.createdAt) && Date.parse(task.dueAt) < Date.parse(task.createdAt) ? task.dueAt : task.createdAt, progress: task.completedAt ? 100 : 0 };
     }),
     sessions: value.sessions.map(session => legacy && isRecord(session) ? { ...session, source: 'manual', focusedSeconds: null, completed: false } : session),
     settings: legacy ? defaultSettings() : value.settings,
@@ -144,8 +151,9 @@ export function validateData(value: unknown): WorkspaceData {
   const validTask = (task: unknown): task is Task => isRecord(task) && str(task.id) && str(task.title) && str(task.notes) && ['inbox','planned','longterm'].includes(String(task.category)) && ['low','normal','high'].includes(String(task.priority)) && optionalDate(task.dueAt) && optionalDate(task.completedAt) && validDate(task.createdAt) && validDate(task.updatedAt);
   const validEvent = (event: unknown): event is ScheduleEvent => isRecord(event) && str(event.id) && str(event.title) && str(event.notes) && validDate(event.startAt) && validDate(event.endAt) && validDate(event.createdAt) && validDate(event.updatedAt);
   const validSession = (session: unknown): session is TimeSession => isRecord(session) && str(session.id) && (session.taskId === null || str(session.taskId)) && validDate(session.startAt) && optionalDate(session.endAt);
-  const validActivity = (activity: unknown): activity is Activity => isRecord(activity) && str(activity.id) && str(activity.taskId) && ['created','started','stopped','completed','reopened','updated'].includes(String(activity.type)) && validDate(activity.at);
-  const extendedTask = (task: Task) => ['longterm', 'shortterm', 'urgent'].includes(task.urgency) && Array.isArray(task.tags) && task.tags.every(str) && optionalDate(task.startAt) && typeof task.progress === 'number' && task.progress >= 0 && task.progress <= 100 && (task.progress === 100) === (task.completedAt !== null) && (!task.startAt || !task.dueAt || Date.parse(task.startAt) <= Date.parse(task.dueAt));
+  const validActivity = (activity: unknown): activity is Activity => isRecord(activity) && str(activity.id) && str(activity.taskId) && ['created','started','stopped','completed','reopened','updated'].includes(String(activity.type)) && validDate(activity.at) && (activity.description === undefined || (str(activity.description) && activity.description.length <= 500)) && (activity.revokedAt === undefined || (optionalDate(activity.revokedAt) && (activity.revokedAt === null || Date.parse(activity.revokedAt) >= Date.parse(activity.at))));
+  const validDay = (day: unknown) => str(day) && /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day;
+  const extendedTask = (task: Task) => ['once', 'daily'].includes(task.type) && Array.isArray(task.checkInDates) && task.checkInDates.every(validDay) && new Set(task.checkInDates).size === task.checkInDates.length && ['longterm', 'shortterm', 'urgent'].includes(task.urgency) && Array.isArray(task.tags) && task.tags.every(str) && optionalDate(task.startAt) && typeof task.progress === 'number' && task.progress >= 0 && task.progress <= 100 && (task.progress === 100) === (task.completedAt !== null) && (!task.startAt || !task.dueAt || Date.parse(task.startAt) <= Date.parse(task.dueAt));
   const extendedSession = (session: TimeSession) => ['manual', 'pomodoro'].includes(session.source) && (session.focusedSeconds === null || (typeof session.focusedSeconds === 'number' && Number.isFinite(session.focusedSeconds) && session.focusedSeconds >= 0)) && typeof session.completed === 'boolean' && (!session.endAt || Date.parse(session.endAt) >= Date.parse(session.startAt));
   if (!data.tasks.every(validTask) || !data.tasks.every(extendedTask) || !data.events.every(validEvent) || data.events.some(event => Date.parse(event.endAt) <= Date.parse(event.startAt)) || !data.sessions.every(validSession) || !data.sessions.every(extendedSession) || !data.activities.every(validActivity) || !uniqueIds(data.tasks) || !uniqueIds(data.events) || !uniqueIds(data.sessions) || !uniqueIds(data.activities)) {
     throw new Error('文件中存在缺失、重复或无效的记录。');
