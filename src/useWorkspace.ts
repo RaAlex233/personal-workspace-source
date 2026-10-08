@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { emptyData, loadData, mergeData, newId, nowIso, saveData, validateData } from './data';
 import type { ScheduleEvent, Settings, Task, TimeSession, Urgency, WorkspaceData } from './data';
+import { acquireWorkspaceAccess } from './workspaceAccess';
+import type { WorkspaceAccess } from './workspaceAccess';
 
 export type TaskDraft = { title: string; notes: string; urgency: Urgency; tags: string[]; startAt: string; dueAt: string; progress: number };
 export type EventDraft = { title: string; notes: string; startAt: string; endAt: string };
@@ -16,36 +18,122 @@ export const tasksOnDay = (tasks: Task[], day: string) => tasks.filter(task => {
   return start && end ? day >= start && day <= end : day === (end || start);
 });
 
+export function weeklyFocusSummary(sessions: TimeSession[], now = new Date()) {
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(now); day.setDate(day.getDate() - 6 + index); return day;
+  });
+  const keys = new Set(days.map(dateKey));
+  const recent = sessions.filter(session => session.source === 'pomodoro' && keys.has(dateKey(new Date(session.startAt))));
+  return {
+    days,
+    dayValues: days.map(day => recent.filter(session => dateKey(new Date(session.startAt)) === dateKey(day)).reduce((sum, session) => sum + sessionSeconds(session), 0)),
+    total: recent.reduce((sum, session) => sum + sessionSeconds(session), 0),
+    completed: recent.filter(session => session.completed).length,
+  };
+}
+
 export function useWorkspace() {
   const [data, setData] = useState<WorkspaceData>(emptyData);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
+  const [writable, setWritable] = useState(false);
+  const [blockedReason, setBlockedReason] = useState('');
+  const [importing, setImporting] = useState(false);
   const loaded = useRef(false);
+  const latest = useRef(data);
+  const persisted = useRef(data);
+  const access = useRef<WorkspaceAccess | null>(null);
+  const importingRef = useRef(false);
+  const opening = useRef(false);
+  const generation = useRef(0);
+  const mounted = useRef(false);
+  const storageError = useRef('');
+  const pendingSaves = useRef(0);
+  const saves = useRef<Promise<void>>(Promise.resolve());
+  const showError = (message: string) => { storageError.current = message; if (mounted.current) setError(message); };
+  const replaceData = (next: WorkspaceData) => { latest.current = next; if (mounted.current) setData(next); };
+  const persist = (next: WorkspaceData) => {
+    const attempt = generation.current;
+    pendingSaves.current += 1;
+    if (mounted.current) setSaving(true);
+    const saved = saves.current.catch(() => undefined).then(() => saveData(next)).then(() => {
+      persisted.current = next;
+    }).catch(e => {
+      if (attempt === generation.current) showError(`保存失败：${String(e instanceof Error ? e.message : e)}`);
+      throw e;
+    }).finally(() => {
+      pendingSaves.current -= 1;
+      if (mounted.current) setSaving(pendingSaves.current > 0);
+    });
+    saves.current = saved;
+    return saved;
+  };
+  const openWorkspace = async (attempt = generation.current) => {
+    if (attempt !== generation.current || opening.current) return;
+    opening.current = true;
+    loaded.current = false;
+    setReady(false);
+    try {
+      if (!access.current?.writable) {
+        const nextAccess = await acquireWorkspaceAccess();
+        if (attempt !== generation.current) { nextAccess.release(); return; }
+        access.current = nextAccess;
+        setWritable(nextAccess.writable);
+        setBlockedReason(nextAccess.reason);
+      }
+      const next = await loadData();
+      if (attempt !== generation.current) return;
+      loaded.current = true;
+      persisted.current = next;
+      replaceData(next);
+      showError('');
+    } catch (e) {
+      if (attempt === generation.current) showError(String(e instanceof Error ? e.message : e));
+    } finally {
+      if (attempt === generation.current) { opening.current = false; setReady(true); }
+    }
+  };
   useEffect(() => {
-    let live = true;
-    loadData().then(next => { if (live) { loaded.current = true; setData(next); } }).catch(e => { if (live) setError(String(e?.message ?? e)); }).finally(() => { if (live) setReady(true); });
-    return () => { live = false; };
+    mounted.current = true;
+    const attempt = ++generation.current;
+    opening.current = false;
+    loaded.current = false;
+    setWritable(false);
+    // Deferring avoids acquiring a lock for StrictMode's discarded mount.
+    void Promise.resolve().then(() => openWorkspace(attempt));
+    return () => {
+      mounted.current = false;
+      generation.current += 1;
+      const ownedAccess = access.current;
+      access.current = null;
+      // Another page must not edit until all writes from this page have settled.
+      void saves.current.catch(() => undefined).then(() => ownedAccess?.release());
+    };
   }, []);
-  useEffect(() => {
-    if (!ready || !loaded.current || error) return;
-    let live = true;
-    setSaving(true);
-    saveData(data).catch(e => { if (live) setError(`保存失败：${String(e?.message ?? e)}`); }).finally(() => { if (live) setSaving(false); });
-    return () => { live = false; };
-  }, [data, ready, error]);
   useEffect(() => { if (!notice) return; const id = setTimeout(() => setNotice(''), 5000); return () => clearTimeout(id); }, [notice]);
-  const update = (fn: (d: WorkspaceData) => WorkspaceData) => {
+  const canEdit = () => {
+    if (!access.current?.writable) { setNotice('当前页面为只读，请先获取编辑权限。'); return false; }
+    if (importingRef.current) { setNotice('正在导入数据，请稍后再编辑。'); return false; }
     if (!loaded.current) { setNotice('请先恢复本地数据，再进行编辑。'); return false; }
-    setData(fn); return true;
+    if (storageError.current) { setNotice('请先重试恢复本地存储，再进行编辑。'); return false; }
+    return true;
+  };
+  const update = (fn: (d: WorkspaceData) => WorkspaceData) => {
+    if (!canEdit()) return false;
+    const next = fn(latest.current);
+    replaceData(next);
+    void persist(next).catch(() => undefined);
+    return true;
   };
   const retryStorage = async () => {
+    if (importingRef.current || opening.current) return;
     try {
-      if (!loaded.current) { setData(await loadData()); loaded.current = true; }
-      else await saveData(data);
-      setError(''); setNotice('本地存储已恢复');
-    } catch (e) { setError(String(e instanceof Error ? e.message : e)); }
+      if (!access.current?.writable || !loaded.current) { await openWorkspace(); return; }
+      await persist(latest.current);
+      showError(''); setNotice('本地存储已恢复');
+    } catch (e) { showError(String(e instanceof Error ? e.message : e)); }
   };
   const saveTask = (draft: TaskDraft, editingId: string | null) => {
     if (!draft.title.trim()) { setNotice('请输入任务名称'); return false; }
@@ -66,8 +154,13 @@ export function useWorkspace() {
     const result = update(d => ({ ...d, tasks: d.tasks.filter(t => t.id !== task.id), sessions: d.sessions.map(s => s.taskId === task.id ? { ...s, taskId: null, endAt: s.endAt ?? nowIso() } : s), activities: d.activities.filter(a => a.taskId !== task.id) }));
     if (result) setNotice('任务已删除'); return result;
   };
-  const recordFocus = (session: TimeSession) => {
-    update(d => d.sessions.some(s => s.id === session.id) ? d : { ...d, sessions: [{ ...session, taskId: d.tasks.some(t => t.id === session.taskId) ? session.taskId : null }, ...d.sessions] });
+  const recordFocus = async (session: TimeSession): Promise<boolean> => {
+    if (!canEdit()) return false;
+    const current = latest.current;
+    const next = current.sessions.some(s => s.id === session.id) ? current : { ...current, sessions: [{ ...session, taskId: current.tasks.some(t => t.id === session.taskId) ? session.taskId : null }, ...current.sessions] };
+    replaceData(next);
+    try { await persist(next); return true; }
+    catch { return false; }
   };
   const stopLegacyTimer = () => update(d => ({ ...d, sessions: d.sessions.map(s => !s.endAt ? { ...s, endAt: nowIso() } : s) }));
   const saveEvent = (draft: EventDraft, editingId: string | null) => {
@@ -82,13 +175,24 @@ export function useWorkspace() {
   const saveSettings = (settings: Settings) => { if (update(d => ({ ...d, settings }))) setNotice('设置已保存'); };
   const exportData = () => { const blob = new Blob([JSON.stringify({ ...data, exportedAt: nowIso() }, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `个人工作台备份-${dateKey(new Date())}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); setNotice('备份已导出'); };
   const importData = async (file: File, mode: 'replace' | 'merge') => {
+    if (!access.current?.writable || opening.current || importingRef.current) { setNotice('当前无法导入，请先获取编辑权限或等待当前操作完成。'); return; }
+    importingRef.current = true;
+    setImporting(true);
+    const attempt = generation.current;
     try {
+      // Include previously accepted edits, then block edits until import commits.
+      await saves.current.catch(() => undefined);
       const incoming = validateData(JSON.parse(await file.text()));
+      if (attempt !== generation.current || !access.current?.writable) return;
       if (mode === 'replace' && !confirm('替换会覆盖当前工作台数据，建议先导出备份。继续？')) return;
-      const next = mode === 'replace' ? incoming : mergeData(data, incoming);
-      await saveData(next); loaded.current = true; setData(next); setError(''); setNotice(`导入完成：${next.tasks.length} 项任务、${next.events.length} 条日程`);
+      const next = mode === 'replace' ? incoming : mergeData(latest.current, incoming);
+      await persist(next);
+      if (attempt !== generation.current) return;
+      loaded.current = true; replaceData(next); showError(''); setNotice(`导入完成：${next.tasks.length} 项任务、${next.events.length} 条日程`);
     } catch (e) { setNotice(`导入失败：${String(e instanceof Error ? e.message : e)}`); }
+    finally { importingRef.current = false; if (mounted.current) setImporting(false); }
   };
-  return { data, ready, error, saving, notice, setNotice, retryStorage, saveTask, toggleTask, deleteTask, recordFocus, stopLegacyTimer, saveEvent, deleteEvent, saveSettings, exportData, importData };
+  const getSavedFocus = (sessionId: string) => persisted.current.sessions.find(session => session.id === sessionId) ?? null;
+  return { data, ready, error, saving, writable, blockedReason, importing, notice, setNotice, retryStorage, saveTask, toggleTask, deleteTask, recordFocus, getSavedFocus, stopLegacyTimer, saveEvent, deleteEvent, saveSettings, exportData, importData };
 }
 export type WorkspaceController = ReturnType<typeof useWorkspace>;

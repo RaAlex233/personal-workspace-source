@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "test": "node scripts/check-core.mjs",
+    "test": "node --test scripts/check-core.mjs scripts/check-hooks.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
@@ -16,6 +16,8 @@
   "devDependencies": {
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
+    "fake-indexeddb": "^6.2.4",
+    "jsdom": "^26.1.0",
     "typescript": "~5.9.2",
     "vite": "^7.1.2"
   }

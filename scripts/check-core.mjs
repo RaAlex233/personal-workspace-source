@@ -1,19 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import ts from 'typescript';
+import { importModule } from './test-modules.mjs';
 
-// Compile the actual modules with the project's TypeScript dependency.
-const output = new URL('../.artifacts/test-modules/', import.meta.url);
-await mkdir(output, { recursive: true });
-for (const name of ['data', 'usePomodoro', 'useWorkspace']) {
-  const source = await readFile(new URL(`../src/${name}.ts`, import.meta.url), 'utf8');
-  const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replaceAll("from './data'", "from './data.mjs'");
-  await writeFile(new URL(`${name}.mjs`, output), compiled);
-}
-const { emptyData, validateData, mergeData, defaultSettings } = await import(new URL('data.mjs', output));
-const { remainingSeconds, restoreTimer } = await import(new URL('usePomodoro.mjs', output));
-const { sessionSeconds, tasksOnDay } = await import(new URL('useWorkspace.mjs', output));
+const { emptyData, validateData, mergeData, defaultSettings } = await importModule('data');
+const { remainingSeconds, restoreTimer } = await importModule('usePomodoro');
+const { sessionSeconds, tasksOnDay, weeklyFocusSummary } = await importModule('useWorkspace');
 const start = '2026-10-01T01:00:00.000Z';
 const end = '2026-10-03T10:00:00.000Z';
 const legacyTask = { id: 'task-1', title: '旧任务', notes: '', category: 'longterm', priority: 'normal', dueAt: end, completedAt: null, createdAt: start, updatedAt: start };
@@ -80,4 +71,25 @@ test('时间视图按任务持续区间显示，区间外不显示', () => {
   assert.equal(tasksOnDay(tasks, '2026-10-01').length, 1);
   assert.equal(tasksOnDay(tasks, '2026-10-02').length, 1);
   assert.equal(tasksOnDay(tasks, '2026-10-04').length, 0);
+});
+
+test('完成状态必须与进度一致，拒绝两个方向的矛盾备份', () => {
+  const completed = modern(); completed.tasks[0].completedAt = end;
+  assert.throws(() => validateData(completed));
+  const pending = modern(); pending.tasks[0].progress = 100;
+  assert.throws(() => validateData(pending));
+  completed.tasks[0].progress = 100;
+  assert.equal(validateData(completed).tasks[0].progress, 100);
+});
+
+test('过去七天汇总与每日柱状图使用同一范围，排除旧记录、未来记录和手动计时', () => {
+  const session = (id, day, seconds, completed = true, source = 'pomodoro') => ({ id, taskId: null, startAt: `${day}T09:00:00`, endAt: `${day}T10:00:00`, focusedSeconds: seconds, completed, source });
+  const sessions = [session('old', '2026-10-01', 600), session('first', '2026-10-02', 120), session('today', '2026-10-08', 30, false), session('future', '2026-10-09', 600), session('manual', '2026-10-08', 600, true, 'manual')];
+  const summary = weeklyFocusSummary(sessions, new Date('2026-10-08T12:00:00'));
+  assert.equal(summary.total, 150);
+  assert.equal(summary.completed, 1);
+  assert.equal(summary.dayValues.reduce((sum, value) => sum + value, 0), summary.total);
+  assert.equal(summary.dayValues[0], 120);
+  assert.equal(summary.dayValues[6], 30);
+  assert.equal(sessions.length, 5);
 });
